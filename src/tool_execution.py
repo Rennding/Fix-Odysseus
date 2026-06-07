@@ -643,6 +643,23 @@ def _split_bg_marker(content: str):
     return False, content
 
 
+# Small local models in fenced mode sometimes invoke the read_file TOOL as if
+# it were a shell command (`read_file "x.md"`), which fails with
+# "read_file: not found" — and the model then fabricates the file's contents
+# instead of retrying. When a bash command uses read_file as a command token,
+# transparently define it as a shell function aliased to `cat` so the read
+# actually succeeds (and a wrong path returns a real "No such file" error the
+# model can correct, rather than a confusing "not found"). Only fires when
+# read_file appears as a command, so ordinary scripts are untouched.
+_READ_FILE_CMD_RE = re.compile(r'(?m)^[ \t]*read_file\b')
+
+
+def _shim_misfired_file_tools(content: str) -> str:
+    if not content or not _READ_FILE_CMD_RE.search(content):
+        return content
+    return 'read_file() { cat -- "$@"; }\n' + content
+
+
 async def _direct_fallback(
     tool: str,
     content: str,
@@ -676,6 +693,7 @@ async def _direct_fallback(
 
     try:
         if tool == "bash":
+            content = _shim_misfired_file_tools(content)
             proc = await asyncio.create_subprocess_shell(
                 content,
                 stdout=asyncio.subprocess.PIPE,

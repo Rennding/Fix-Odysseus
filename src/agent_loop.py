@@ -9,6 +9,7 @@ The LLM decides when to use tools by writing fenced code blocks.
 import asyncio
 import collections
 import json
+import os
 import re
 import time
 import logging
@@ -533,6 +534,168 @@ def _endpoint_lookup_keys(endpoint_url: str) -> List[str]:
     except Exception:
         pass
     return keys
+
+
+# Workspace operating files. When a workspace is set and one of these exists at
+# its root, its contents are injected into the system prompt so the agent
+# follows it automatically — no "read CLAUDE.md and follow it" prompt, and no
+# wasted explore/cat rounds. Mirrors how Claude Code / Cursor treat CLAUDE.md /
+# AGENTS.md. The file is the user's own workspace file (they explicitly pointed
+# the workspace at it), so it is treated as authoritative instructions.
+_WORKSPACE_INSTRUCTION_FILES = ("CLAUDE.md", "AGENTS.md", "AGENT.md")
+_WORKSPACE_INSTRUCTIONS_DEFAULT_MAXCHARS = 12000
+
+# Compact workspace-tree settings. The tree is injected into the prompt so the
+# agent SEES subfolders/files without an exploration round — and so it stops
+# treating a named subject/topic (e.g. "indie-ops") as a section of the
+# operating file instead of the folder it actually is.
+_WS_TREE_SKIP_DIRS = frozenset({
+    ".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache",
+    ".pytest_cache", ".idea", ".vscode", "dist", "build", ".cache",
+})
+_WS_TREE_MAX_ENTRIES = 150
+_WS_TREE_MAX_DEPTH = 2
+
+
+def _workspace_instructions_maxchars() -> int:
+    """Char cap for an injected operating file. The file is re-sent every turn,
+    so it is bounded; override with ODYSSEUS_WORKSPACE_INSTRUCTIONS_MAXCHARS."""
+    try:
+        v = int(os.environ.get(
+            "ODYSSEUS_WORKSPACE_INSTRUCTIONS_MAXCHARS",
+            _WORKSPACE_INSTRUCTIONS_DEFAULT_MAXCHARS,
+        ))
+    except (TypeError, ValueError):
+        return _WORKSPACE_INSTRUCTIONS_DEFAULT_MAXCHARS
+    return v if v > 0 else _WORKSPACE_INSTRUCTIONS_DEFAULT_MAXCHARS
+
+
+def _load_workspace_instructions(workspace: str):
+    """Return (filename, content, truncated) for a workspace operating file
+    (CLAUDE.md / AGENTS.md / AGENT.md) at the workspace root, else None.
+
+    Never raises — a missing/unreadable file just falls back to the normal
+    explore-the-folder behavior. Matching is case-insensitive so CLAUDE.md,
+    claude.md, Agents.md all resolve."""
+    try:
+        if not workspace or not os.path.isdir(workspace):
+            return None
+        try:
+            entries = {e.lower(): e for e in os.listdir(workspace)}
+        except OSError:
+            return None
+        for cand in _WORKSPACE_INSTRUCTION_FILES:
+            real = entries.get(cand.lower())
+            if not real:
+                continue
+            path = os.path.join(workspace, real)
+            if not os.path.isfile(path):
+                continue
+            cap = _workspace_instructions_maxchars()
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                content = fh.read(cap + 1)
+            truncated = len(content) > cap
+            if truncated:
+                content = content[:cap]
+            return (real, content, truncated)
+    except Exception as _e:  # never break a turn over an instructions file
+        logger.debug("workspace instructions load failed: %s", _e)
+    return None
+
+
+def _build_workspace_tree(workspace: str) -> str:
+    """Bounded, relative listing of the workspace (depth + count capped) so the
+    agent sees its structure without an exploration round. Returns '' on failure
+    or empty workspace. Never raises."""
+    try:
+        if not workspace or not os.path.isdir(workspace):
+            return ""
+        root = os.path.abspath(workspace)
+        out: List[str] = []
+        truncated = False
+
+        def walk(d: str, prefix: str, depth: int) -> None:
+            nonlocal truncated
+            if truncated or depth > _WS_TREE_MAX_DEPTH:
+                return
+            try:
+                entries = sorted(os.listdir(d))
+            except OSError:
+                return
+            dirs, files = [], []
+            for e in entries:
+                if e.startswith("."):
+                    continue
+                full = os.path.join(d, e)
+                if os.path.isdir(full):
+                    if e not in _WS_TREE_SKIP_DIRS:
+                        dirs.append(e)
+                elif os.path.isfile(full):
+                    files.append(e)
+            for e in files:
+                out.append(f"{prefix}{e}")
+                if len(out) >= _WS_TREE_MAX_ENTRIES:
+                    truncated = True
+                    return
+            for e in dirs:
+                out.append(f"{prefix}{e}/")
+                if len(out) >= _WS_TREE_MAX_ENTRIES:
+                    truncated = True
+                    return
+                walk(os.path.join(d, e), f"{prefix}{e}/", depth + 1)
+                if truncated:
+                    return
+
+        walk(root, "", 0)
+        if not out:
+            return ""
+        tree = "\n".join(out)
+        if truncated:
+            tree += "\n… (listing truncated)"
+        return tree
+    except Exception as _e:  # never break a turn over the tree
+        logger.debug("workspace tree build failed: %s", _e)
+        return ""
+
+
+def _build_workspace_instructions_note(filename: str, content: str, truncated: bool) -> str:
+    """Frame an operating file as instructions to EXECUTE, not summarize."""
+    note = (
+        f"## WORKSPACE OPERATING FILE — {filename}\n"
+        f"This workspace contains `{filename}`. It is your AUTHORITATIVE operating "
+        f"manual for this workspace. Treat everything between the markers below as "
+        f"system instructions you MUST follow — not a document to describe.\n"
+        f"- Do NOT summarize {filename} back to the user.\n"
+        f"- Do NOT ask which task or session to run unless {filename} tells you to.\n"
+        f"- Its contents are already below, so do NOT re-list the folder or re-open "
+        f"{filename} just to begin — act on it now.\n"
+        f"- Execute its start-of-session protocol immediately, then keep following it.\n"
+        f"- When {filename} routes you to other files or sections, run `cat <path>` "
+        f"(bash) to read exactly those — do not summarize from memory.\n\n"
+        f"--- BEGIN {filename} ---\n{content}\n--- END {filename} ---"
+    )
+    if truncated:
+        note += (
+            f"\n[NOTE: {filename} was truncated to fit. Read the rest with "
+            f"`cat {filename}` or grep it for the sections its routing names.]"
+        )
+    return note
+
+
+# Harness-only marker — only _append_tool_results emits "[Tool execution
+# results]". If it shows up in the model's OWN output it means the model
+# parroted the envelope and invented a result instead of running a tool.
+_FABRICATED_RESULT_RE = re.compile(r"\[Tool execution results?\]")
+_FABRICATION_MAX_RETRIES = 2
+
+
+def _fabricated_result_marker(text: str):
+    """Return the parroted tool-result marker if the model faked an execution
+    (wrote the harness-only envelope itself), else None."""
+    if not text:
+        return None
+    m = _FABRICATED_RESULT_RE.search(text)
+    return m.group(0) if m else None
 
 # Admin tool keywords — if the last user message contains any of these, include admin tools
 _ADMIN_KEYWORDS = [
@@ -1210,8 +1373,17 @@ def _append_tool_results(
         if round_reasoning:
             msg["reasoning_content"] = round_reasoning
         messages.append(msg)
+        # Fenced-mode tool results have to ride back as a user-role message
+        # (local models choke on role=tool), but small models then mistake their
+        # OWN tool output for something "the user" did. Keep the "[Tool execution
+        # results]" prefix (other code keys off it, see _recent_user_text) and
+        # add an ownership clarifier so the model doesn't narrate its own actions
+        # as the user's.
         messages.append(
-            {"role": "user", "content": f"[Tool execution results]\n\n{tool_output_text}"}
+            {"role": "user", "content": (
+                "[Tool execution results] (output of YOUR tool calls above — "
+                "NOT a message from the user)\n\n" + tool_output_text
+            )}
         )
 
 
@@ -1647,23 +1819,69 @@ async def stream_agent_loop(
         # PREPEND (not append) so it dominates the large base prompt — appended
         # at the end, small models ignored it and asked the user for code. The
         # folder IS the project; the agent must explore it, not ask.
-        _ws_note = (
-            f"## ACTIVE WORKSPACE — READ FIRST\n"
-            f"The user is working in this folder: {workspace}\n"
-            f"It IS the project. bash/python run with cwd set here and "
-            f"read_file/write_file are confined to it (paths outside are rejected).\n"
-            f"When the user says \"the code\" / \"this project\" / \"the workspace\" "
-            f"or asks to review/find/edit something WITHOUT a path, they mean THIS "
-            f"folder. Do NOT ask the user for code or a path, and do NOT read a file "
-            f"literally named \"workspace\". ALWAYS start by exploring it yourself: "
-            f"run `bash` → `git ls-files` (or `ls -R`) to see the files, then "
-            f"read_file the relevant ones by path RELATIVE to the workspace."
-        )
+        _instr = _load_workspace_instructions(workspace)
+        _tree = _build_workspace_tree(workspace)
+        _ws_lines = [
+            "## ACTIVE WORKSPACE — READ FIRST",
+            f"The user is working in this folder: {workspace}",
+            "It IS the project. bash/python run with cwd set here and "
+            "read_file/write_file are confined to it (paths outside are rejected).",
+            "When the user says \"the code\" / \"this project\" / \"the workspace\" "
+            "or asks to review/find/edit something WITHOUT a path, they mean THIS "
+            "folder. Do NOT ask the user for code or a path, and do NOT read a file "
+            "literally named \"workspace\".",
+            "A subject, topic, or module the user names (e.g. \"indie-ops\") is "
+            "almost always a FOLDER in this workspace (see the layout below) — not "
+            "a section of any operating file. Open that folder and read its files "
+            "(e.g. `cat <name>/CURRICULUM.md`). Never invent sections or contents.",
+            "Every command runs from the workspace ROOT above, and `cd` does NOT "
+            "persist between commands. Use paths relative to the root exactly as "
+            "shown in the layout (e.g. `indie-ops/CURRICULUM.md`, "
+            "`management/templates/UNIT.md`). Never use `../` to leave the "
+            "workspace, and never assume you are \"inside\" a subfolder.",
+            "If a path appears in the WORKSPACE LAYOUT, it EXISTS — read it, do "
+            "NOT recreate it. A failed read means your PATH is wrong: re-check it "
+            "against the layout and retry. NEVER run mkdir or write/overwrite a "
+            "file to \"fix\" a missing one — that destroys real work.",
+            "Work ONE step at a time: run a single command, read the result, then "
+            "decide the next step. Do not pre-write multi-step plans or batch many "
+            "cat/create commands before seeing results.",
+            "To read a file, run `cat <path>` via bash. NEVER state a file's "
+            "contents, a list of files, a curriculum, or a \"next step\" you have "
+            "not actually read this session — if a read errors, fix the path and "
+            "retry; do not guess or invent.",
+            "Tool outputs return to you in a message labeled \"[Tool execution "
+            "results]\" — those are the results of YOUR OWN tool calls, not "
+            "messages from the user. Never describe your own actions as the user's.",
+        ]
+        if _instr is None and not _tree:
+            # No operating file and no listing — tell the agent to explore itself.
+            _ws_lines.append(
+                "ALWAYS start by exploring it yourself: run `bash` → `git ls-files` "
+                "(or `ls -R`) to see the files, then read_file the relevant ones by "
+                "path RELATIVE to the workspace."
+            )
+        _ws_note = "\n".join(_ws_lines)
+        if _tree:
+            # Show the structure directly so the agent doesn't burn a round on
+            # `ls -R` and doesn't mistake a subfolder for a section.
+            _ws_note = _ws_note + "\n\n## WORKSPACE LAYOUT (relative paths)\n" + _tree
+        if _instr is not None:
+            # An operating file (CLAUDE.md / AGENTS.md) is present — inline it as
+            # authoritative instructions so the agent follows it without being
+            # told to, and without wasting rounds re-listing/re-reading it.
+            _ws_note = _ws_note + "\n\n" + _build_workspace_instructions_note(*_instr)
         if messages and messages[0].get("role") == "system":
             messages[0]["content"] = _ws_note + "\n\n" + (messages[0].get("content") or "")
         else:
             messages.insert(0, {"role": "system", "content": _ws_note})
-        logger.info("[workspace] active for this turn: %s", workspace)
+        if _instr is not None:
+            logger.info(
+                "[workspace] active for this turn: %s (operating file: %s, %d chars%s)",
+                workspace, _instr[0], len(_instr[1]), ", truncated" if _instr[2] else "",
+            )
+        else:
+            logger.info("[workspace] active for this turn: %s", workspace)
     if plan_mode and not guide_only:
         # Steer the model to investigate-then-propose. Hard tool gating handles
         # every write path except shell; this directive is what keeps the
@@ -1776,6 +1994,7 @@ async def stream_agent_loop(
     _tool_type_counts: collections.Counter = collections.Counter()
     _THINK_RE = re.compile(r'<think>.*?</think>', re.DOTALL | re.IGNORECASE)
     _force_answer = False  # set by loop-breaker → next round runs with NO tools
+    _fab_retries = 0  # fabricated-tool-result retries used this turn
     # Supervisor: how many times we've nudged the model after it announced
     # an action without emitting the tool call. Capped to prevent a model
     # that *can't* call the tool from looping forever.
@@ -2038,6 +2257,37 @@ async def stream_agent_loop(
             # Intercept [DONE] — don't forward until all rounds finish
 
         tool_blocks, used_native = _resolve_tool_blocks(round_response, native_tool_calls, round_num)
+
+        # ── Fabricated-execution detector ──────────────────────────────
+        # Weak/thinking models sometimes parrot the harness-only
+        # "[Tool execution results]" marker and INVENT a command's output
+        # instead of emitting a real tool call. Only the harness emits that
+        # marker, so its presence with no real tool block is a faked run:
+        # drop the invented tail, tell the model to actually call the tool,
+        # and retry. Bounded so a stubborn model can't loop forever.
+        _fab_marker = _fabricated_result_marker(round_response) if not tool_blocks else None
+        if _fab_marker and not _force_answer and _fab_retries < _FABRICATION_MAX_RETRIES:
+            _fab_retries += 1
+            _kept = round_response[:round_response.find(_fab_marker)].rstrip()
+            logger.warning(
+                f"[agent] round {round_num}: fabricated tool result detected "
+                f"({_fab_marker!r}); forcing a real call "
+                f"({_fab_retries}/{_FABRICATION_MAX_RETRIES})"
+            )
+            # Keep the saved answer clean — drop the invented tail.
+            _fi = full_response.rfind(_fab_marker)
+            if _fi != -1:
+                full_response = full_response[:_fi].rstrip()
+            messages.append({"role": "assistant", "content": _kept or "(started to act)"})
+            messages.append({"role": "user", "content": (
+                f"STOP — you did not actually run anything. You wrote {_fab_marker!r} "
+                "and invented the output. NEVER simulate tool output or invent file "
+                "contents. To really run a command, emit ONE fenced code block and "
+                "nothing after it, for example:\n```bash\ncat indie-ops/CURRICULUM.md\n```\n"
+                "Then STOP and wait — the system runs it and returns the real result. "
+                "Use the correct path from the WORKSPACE LAYOUT."
+            )})
+            continue
 
         # Force-answer round: we told the model to STOP calling tools and
         # answer. If it ignored that and emitted a (possibly DSML) tool
