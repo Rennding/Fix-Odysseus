@@ -8,7 +8,7 @@
 **Changed:** <user-facing summary, plain English>
 **Test:** <numbered steps>
 **Risks:** <observable symptoms>
-**Gate:** `<validation gate — see CLAUDE.md §4>` — PASS / FAIL
+**Gate:** `python -m pytest (+ py_compile + node --check, see CLAUDE.md §4)` — PASS / FAIL
 ```
 
 ## Voice rules
