@@ -9,6 +9,7 @@ The LLM decides when to use tools by writing fenced code blocks.
 import asyncio
 import collections
 import json
+import os
 import re
 import time
 import logging
@@ -533,6 +534,86 @@ def _endpoint_lookup_keys(endpoint_url: str) -> List[str]:
     except Exception:
         pass
     return keys
+
+
+# Workspace operating files. When a workspace is set and one of these exists at
+# its root, its contents are injected into the system prompt so the agent
+# follows it automatically — no "read CLAUDE.md and follow it" prompt, and no
+# wasted explore/cat rounds. Mirrors how Claude Code / Cursor treat CLAUDE.md /
+# AGENTS.md. The file is the user's own workspace file (they explicitly pointed
+# the workspace at it), so it is treated as authoritative instructions.
+_WORKSPACE_INSTRUCTION_FILES = ("CLAUDE.md", "AGENTS.md", "AGENT.md")
+_WORKSPACE_INSTRUCTIONS_DEFAULT_MAXCHARS = 12000
+
+
+def _workspace_instructions_maxchars() -> int:
+    """Char cap for an injected operating file. The file is re-sent every turn,
+    so it is bounded; override with ODYSSEUS_WORKSPACE_INSTRUCTIONS_MAXCHARS."""
+    try:
+        v = int(os.environ.get(
+            "ODYSSEUS_WORKSPACE_INSTRUCTIONS_MAXCHARS",
+            _WORKSPACE_INSTRUCTIONS_DEFAULT_MAXCHARS,
+        ))
+    except (TypeError, ValueError):
+        return _WORKSPACE_INSTRUCTIONS_DEFAULT_MAXCHARS
+    return v if v > 0 else _WORKSPACE_INSTRUCTIONS_DEFAULT_MAXCHARS
+
+
+def _load_workspace_instructions(workspace: str):
+    """Return (filename, content, truncated) for a workspace operating file
+    (CLAUDE.md / AGENTS.md / AGENT.md) at the workspace root, else None.
+
+    Never raises — a missing/unreadable file just falls back to the normal
+    explore-the-folder behavior. Matching is case-insensitive so CLAUDE.md,
+    claude.md, Agents.md all resolve."""
+    try:
+        if not workspace or not os.path.isdir(workspace):
+            return None
+        try:
+            entries = {e.lower(): e for e in os.listdir(workspace)}
+        except OSError:
+            return None
+        for cand in _WORKSPACE_INSTRUCTION_FILES:
+            real = entries.get(cand.lower())
+            if not real:
+                continue
+            path = os.path.join(workspace, real)
+            if not os.path.isfile(path):
+                continue
+            cap = _workspace_instructions_maxchars()
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                content = fh.read(cap + 1)
+            truncated = len(content) > cap
+            if truncated:
+                content = content[:cap]
+            return (real, content, truncated)
+    except Exception as _e:  # never break a turn over an instructions file
+        logger.debug("workspace instructions load failed: %s", _e)
+    return None
+
+
+def _build_workspace_instructions_note(filename: str, content: str, truncated: bool) -> str:
+    """Frame an operating file as instructions to EXECUTE, not summarize."""
+    note = (
+        f"## WORKSPACE OPERATING FILE — {filename}\n"
+        f"This workspace contains `{filename}`. It is your AUTHORITATIVE operating "
+        f"manual for this workspace. Treat everything between the markers below as "
+        f"system instructions you MUST follow — not a document to describe.\n"
+        f"- Do NOT summarize {filename} back to the user.\n"
+        f"- Do NOT ask which task or session to run unless {filename} tells you to.\n"
+        f"- Its contents are already below, so do NOT re-list the folder or re-open "
+        f"{filename} just to begin — act on it now.\n"
+        f"- Execute its start-of-session protocol immediately, then keep following it.\n"
+        f"- When {filename} routes you to other files or sections, use read_file/bash "
+        f"to fetch exactly those.\n\n"
+        f"--- BEGIN {filename} ---\n{content}\n--- END {filename} ---"
+    )
+    if truncated:
+        note += (
+            f"\n[NOTE: {filename} was truncated to fit. Read the rest with "
+            f"`read_file {filename}` or grep it for the sections its routing names.]"
+        )
+    return note
 
 # Admin tool keywords — if the last user message contains any of these, include admin tools
 _ADMIN_KEYWORDS = [
@@ -1647,23 +1728,41 @@ async def stream_agent_loop(
         # PREPEND (not append) so it dominates the large base prompt — appended
         # at the end, small models ignored it and asked the user for code. The
         # folder IS the project; the agent must explore it, not ask.
-        _ws_note = (
-            f"## ACTIVE WORKSPACE — READ FIRST\n"
-            f"The user is working in this folder: {workspace}\n"
-            f"It IS the project. bash/python run with cwd set here and "
-            f"read_file/write_file are confined to it (paths outside are rejected).\n"
-            f"When the user says \"the code\" / \"this project\" / \"the workspace\" "
-            f"or asks to review/find/edit something WITHOUT a path, they mean THIS "
-            f"folder. Do NOT ask the user for code or a path, and do NOT read a file "
-            f"literally named \"workspace\". ALWAYS start by exploring it yourself: "
-            f"run `bash` → `git ls-files` (or `ls -R`) to see the files, then "
-            f"read_file the relevant ones by path RELATIVE to the workspace."
-        )
+        _instr = _load_workspace_instructions(workspace)
+        _ws_lines = [
+            "## ACTIVE WORKSPACE — READ FIRST",
+            f"The user is working in this folder: {workspace}",
+            "It IS the project. bash/python run with cwd set here and "
+            "read_file/write_file are confined to it (paths outside are rejected).",
+            "When the user says \"the code\" / \"this project\" / \"the workspace\" "
+            "or asks to review/find/edit something WITHOUT a path, they mean THIS "
+            "folder. Do NOT ask the user for code or a path, and do NOT read a file "
+            "literally named \"workspace\".",
+        ]
+        if _instr is None:
+            # No operating file — tell the agent to explore the folder itself.
+            _ws_lines.append(
+                "ALWAYS start by exploring it yourself: run `bash` → `git ls-files` "
+                "(or `ls -R`) to see the files, then read_file the relevant ones by "
+                "path RELATIVE to the workspace."
+            )
+        _ws_note = "\n".join(_ws_lines)
+        if _instr is not None:
+            # An operating file (CLAUDE.md / AGENTS.md) is present — inline it as
+            # authoritative instructions so the agent follows it without being
+            # told to, and without wasting rounds re-listing/re-reading it.
+            _ws_note = _ws_note + "\n\n" + _build_workspace_instructions_note(*_instr)
         if messages and messages[0].get("role") == "system":
             messages[0]["content"] = _ws_note + "\n\n" + (messages[0].get("content") or "")
         else:
             messages.insert(0, {"role": "system", "content": _ws_note})
-        logger.info("[workspace] active for this turn: %s", workspace)
+        if _instr is not None:
+            logger.info(
+                "[workspace] active for this turn: %s (operating file: %s, %d chars%s)",
+                workspace, _instr[0], len(_instr[1]), ", truncated" if _instr[2] else "",
+            )
+        else:
+            logger.info("[workspace] active for this turn: %s", workspace)
     if plan_mode and not guide_only:
         # Steer the model to investigate-then-propose. Hard tool gating handles
         # every write path except shell; this directive is what keeps the
