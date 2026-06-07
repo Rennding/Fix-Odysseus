@@ -32,7 +32,7 @@ QA checklist: <numbered steps the QA can run on the device or in the browser>
 Risks: <observable symptoms if it goes wrong>
 Open questions: <only if any remain after revisions pass>
 
-Validation: <validation gate — see CLAUDE.md §4>
+Validation: python -m pytest; python -m py_compile app.py routes/*.py src/*.py; node --check static/js/<changed-file>.js
 Model: Sonnet | Opus  ← Sonnet for mechanical / UI / content; Opus for plan / audit / complex judgment
 ```
 

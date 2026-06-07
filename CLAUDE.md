@@ -1,102 +1,4 @@
-# <<NEW_PROJECT>> — Claude Operating File
-
----
-
-## §0.0 · First-run protocol
-
-<!--
-This block self-erases on the first session. After bootstrap completes, the entire §0.0 section is deleted from this file. Do not copy, reference, or rely on §0.0 from any other file — it does not survive bootstrap.
--->
-
-This repository was bootstrapped from the attended pipeline template. On the very first session in a fresh copy, Claude runs the bootstrap flow below before reading anything else. The trigger detection and the three-step ASK / CONFIRM / APPLY flow are mandatory — skipping ahead to §0 is a §0.1 violation.
-
-### Trigger
-
-Enter bootstrap mode if **either** is true at session start:
-
-- `PROJECT.md` does not exist at the repo root, OR
-- `PROJECT.md` contains the literal marker `<<NEW_PROJECT>>` anywhere in the file.
-
-If neither is true, skip §0.0 entirely — bootstrap has already run. Continue to §0.
-
-While in bootstrap mode, ignore the §0 / §1 routing table and the GitHub sync step. The repo is not yet in a state where session routing applies.
-
-### STEP 1 · PROPOSE, then confirm (one round, never interrogate)
-
-Don't quiz Aram question-by-question. Infer sensible defaults, show them in one message, and ask him to correct anything. This template is already personalised to Aram, so there is no "about you" or team question; §3 and §3.1 are already filled in.
-
-Infer before asking:
-
-- **Project name** — the repo name, title-cased (from `git remote get-url origin` or the directory name).
-- **Primary platform** — default `web`.
-- **GitHub repo URL** — from `git remote get-url origin`.
-- **Stack** — propose the closer fit of Aram's two usual stacks from the one-liner: **Next.js 15 + React 19 + TS + Tailwind + Dexie, PWA on Vercel** (local-first apps), or **Astro + TS + MediaPipe, on Cloudflare Pages** (static / content / CV). If neither clearly fits, propose `TBD`. When a stack is proposed, state its validation-gate command (`npm run check`).
-- **One-line description** — the one thing Claude cannot infer. Ask for it outright.
-
-Present it as one message: "Here's what I'll set unless you correct it: name=`<…>`, platform=`<…>`, repo=`<…>`, stack=`<…>` (gate: `<…>`). Give me the one-line description, change anything wrong, or say 'go.'" Treat any unaddressed item as accepted at its default. The description is the only hard requirement; everything else has a default.
-
-### STEP 2 · CONFIRM
-
-Show a structured summary of what will change, file by file. Aram can edit answers in this gate.
-
-```
-About to apply on first-run bootstrap:
-
-  CLAUDE.md
-    H1            -> "<PROJECT NAME> — Claude Operating File"
-    §4 Code rules -> filled if stack chosen, else "TBD — stack-decision session"
-    §14 Code nav  -> generator note if stack chosen, else "TBD — stack-decision session"
-    §0 / §0.1     -> stack-deferred note + §4-halt bullet kept if stack=TBD, removed if stack=chosen
-    §0.0          -> DELETED (entire block)
-    §3 / §3.1     -> unchanged (already Aram)
-
-  PROJECT.md    -> fresh stub from the answers (replaces the <<NEW_PROJECT>> marker)
-  DEVLOG.md     -> project name in H1 + repo URL in the queue-state note
-  README.md     -> one-screen overview of the project (replaces the kit README)
-  HOW_TO_USE.md -> <<NEW_PROJECT>> markers replaced with the project name
-  management/templates/*    -> gate placeholders filled if stack chosen
-  .github/ISSUE_TEMPLATE/*  -> already assigned to @Rennding (no change)
-
-  Atomic commit: "[#infra] Bootstrap from template-attended-pipeline"
-```
-
-Wait for an explicit "go" (or equivalent) before STEP 3. Treat anything else as a revision request and re-show the diff.
-
-### STEP 3 · APPLY (single atomic commit)
-
-Run all of these as one batch, then commit once with `[#infra] Bootstrap from template-attended-pipeline`:
-
-a. **Rewrite `CLAUDE.md`:**
-   - Replace the H1 with `<PROJECT NAME> — Claude Operating File`.
-   - If stack chosen: fill §4 with the code rules + the validation-gate command, and fill §14 with the code-navigation note for that stack. Then remove the "Stack-deferred sections" note from §0 and the "§4 not yet filled in" bullet from §0.1, and drop `--if-present` from the gate step in `.github/workflows/ci.yml` so a missing gate fails CI instead of passing silently. If TBD: leave §4 / §14 as the TBD placeholders and keep both notes.
-   - Leave §3 and §3.1 exactly as they are (already Aram). Do not touch the §0 always-read range "§0–§6 + §14".
-   - **Delete the entire §0.0 block:** from the `## §0.0 · First-run protocol` heading down to (and including) the `---` rule line immediately before `## §0 · How to read this file`. The result is the H1, then §0, then §0.1, all otherwise unchanged. (§0.0 sits before §0, so deleting it shifts no top-level section numbers.)
-
-b. **Write a fresh `PROJECT.md`** from the answers, headings: What is `<PROJECT NAME>`, Platform targets, Stack, Team, Folder map. Add a Languages, Voice and tone, or Domain knowledge section only if the answers supply content for it.
-
-c. **Rewrite `DEVLOG.md`** — project name in the H1, the GitHub repo URL in the queue-state note, placeholder decisions / versions.
-
-d. **Write a fresh `README.md`** — one-screen overview from the answers (name, one-liner, status, links to the pipeline files, team table). Do not reference the template or any `pipeline-*` folder — none exists in the new repo.
-
-e. **Adapt `HOW_TO_USE.md`** — replace the `<<NEW_PROJECT>>` markers with the project name. Examples stay generic.
-
-f. **If stack chosen:** replace the `<validation gate — see CLAUDE.md §4>` and `<stack-specific gate, TBD>` placeholders in `management/templates/SPEC.md` and `management/templates/QA_BRIEF.md` with the real gate command.
-
-g. **Append a Bootstrap entry to `DEVLOG.md`** under "Decisions log" with today's date and a one-line summary (project name, platform, stack-or-TBD). This is the only place the word "bootstrap" survives — it is history, not active rules.
-
-h. **Stage all touched files and commit** with `[#infra] Bootstrap from template-attended-pipeline`. If stack is TBD, also open a stack-decision Plan issue (or note it for Aram if GitHub MCP is unavailable).
-
-### Self-erase verification
-
-After the commit, the new `CLAUDE.md` MUST satisfy all of:
-
-- `grep -n "First-run" CLAUDE.md` -> zero hits.
-- `grep -n "§0.0" CLAUDE.md` -> zero hits.
-- `grep -n "<<NEW_PROJECT>>" CLAUDE.md` -> zero hits.
-- `grep -in "bootstrap" CLAUDE.md` -> zero hits.
-- §0's always-read range still reads "§0–§6 + §14".
-
-`bootstrap` may legitimately appear once in `DEVLOG.md` as history. It must not appear anywhere else. If any check fails, halt and surface to Aram — bootstrap is meant to be reversible by reverting one commit; do not patch a partial bootstrap by hand.
+# Fix-Odysseus — Claude Operating File
 
 ---
 
@@ -127,7 +29,7 @@ For known failure modes, `grep management/failure-modes.md` on demand (any sessi
 
 Never read `DEVLOG.md` at session start — it is human-facing only.
 
-**Stack-deferred sections.** §4 (code rules) and §14 (code navigation) are placeholders until the stack-decision session lands. Build / Improve sessions cannot legitimately complete a code change before §4 is filled in — if one is requested, halt per §0.1 and surface to Aram. (This note is removed once a stack is chosen.)
+**Pending codebase import.** This repo is the pipeline scaffold only. The Odysseus fork (`pewdiepie-archdaemon/odysseus`) has not been merged in yet, so no app code exists; importing it is the immediate next step. The first session after the merge reads the incoming codebase and confirms structure (per §0.1) before any patch. (This note is removed once the import lands and structure is confirmed.)
 
 ---
 
@@ -136,8 +38,8 @@ Never read `DEVLOG.md` at session start — it is human-facing only.
 OS-style guard rails. Apply before reading anything else.
 
 - **Missing referenced file** (`PROJECT.md`, `management/templates/*.md`, `management/specs/<spec>.md`, `management/audits/<audit>.md`, `management/failure-modes.md`): halt the session and surface to Aram. Never improvise the content from memory — drift between CLAUDE.md and on-disk files is a known failure mode (§13).
-- **Routing ambiguity** (session type unclear, or multiple types apply): ask Aram ONE question (`q:` style) before reading anything else. If no answer, default to Build — but see the §0 stack-deferred clause.
-- **§4 not yet filled in** and the request requires writing or editing product code: halt and surface. Stack-decision is a prerequisite for any Build / Improve session. (This bullet is removed once a stack is chosen.)
+- **Routing ambiguity** (session type unclear, or multiple types apply): ask Aram ONE question (`q:` style) before reading anything else. If no answer, default to Build (subject to the §0 pending-import note).
+- **No app code present yet.** The Odysseus fork import is pending (see the §0 pending-import note). A Build or Improve request that assumes existing product code: halt and surface. The first post-import session reads the incoming codebase and confirms structure before any patch. (This bullet is removed once the import lands and structure is confirmed.)
 - **Conflict between CLAUDE.md and a downstream file** (e.g. a SPEC uses one form, the template uses another): the on-disk template wins for new content; existing files keep their original form. Add a row to `management/failure-modes.md` describing the mismatch in the same session.
 - **Synthesis over verification**: assertions or multi-step recommendations drawn from training rather than immediate context are high-risk. Open with the §6 "Path before detail" line; if `Source:` is `training` or `unsure`, verify before writing detail (codebase grep, docs WebFetch, GitHub query, package-registry). The trigger categories (a–h), the tells, and the verification tools live in the "Synthesis over verification" row of `management/failure-modes.md` — grep it before responding in any of them (mandatory, per §0).
 
@@ -206,11 +108,30 @@ Refined over time via `HOW_TO_USE.md §8` teach-as-you-go.
 
 ## §4 · Non-negotiable code rules
 
-Stack not yet chosen. §4 is filled in once a stack is chosen (at the first session if you pick one then, otherwise by a stack-decision Plan). Until then, Build and Improve sessions are blocked per §0.1.
+This project is a **fork of Odysseus** (`pewdiepie-archdaemon/odysseus`), a self-hosted AI workspace. The job is targeted patches to that existing codebase, never greenfield scaffolding. Until the fork is merged in, no app code exists (see the §0 pending-import note); these rules govern every patch once it lands.
 
-Validation gate before any QA Brief: `<stack-specific gate, TBD>` — zero errors required.
+**Stack (do not change without a Plan):**
+- Backend: Python 3.11, FastAPI, SQLite, ChromaDB. Entry point: `app.py` (uvicorn).
+- Frontend: vanilla JavaScript in `static/js/`. No framework, no build step, no bundler; do not introduce one.
+- Runtime: Docker Compose (`odysseus`, `chromadb`, `searxng`, `ntfy`). Models are served externally via Ollama / llama.cpp / vLLM; never bundle a model server.
 
-<!-- When the stack lands, this section holds the concrete code rules (language, framework, file and naming conventions, the data-access boundary, import style, state rules, test posture) and the exact validation-gate command. Keep it tight: the rules a builder must not violate, not a tutorial. -->
+**Rules a patch must not violate:**
+1. **Patch minimally; match the surrounding code.** This may be sent upstream as a PR, and upstream rejects changes that ignore its conventions. Mirror each file's existing idiom (naming, structure, comment density). No drive-by refactors, no reformatting of untouched lines.
+2. **Respect the visual style.** Upstream rejects agent PRs that drift the look. Any UI-touching change (CSS, or DOM code in `static/js/`) must preserve the existing design.
+3. **No new dependencies or compose services** without an explicit Plan decision.
+4. **Keep the data layer consistent.** SQLite is the source of truth; ChromaDB is the vector index. Do not bypass the existing data-access path.
+
+**UI verification (hard gate, beyond the validation gate below).** A compile or type-check is never sufficient for a UI-touching change. Capture a screenshot from the running app and attach it to the QA Brief and the PR. A green gate alone does not pass a UI change.
+
+**Validation gate before any QA Brief** (zero errors required):
+
+```
+python -m pytest
+python -m py_compile app.py routes/*.py src/*.py
+node --check static/js/<changed-file>.js
+```
+
+Run `node --check` on every changed JS file. CI runs the same gate (`.github/workflows/ci.yml`), guarded so it passes on the scaffold-only repo and only enforces once the fork is merged.
 
 ---
 
@@ -418,10 +339,16 @@ To add a new row, append to the table in that file (not here). Section number pr
 
 ## §14 · Code navigation
 
-Stack-agnostic until the codebase grows. A fresh repo has no symbol index — orient via `grep -n` against the source tree and targeted `Read` slices. Never open a whole module to find a function.
+Python backend plus vanilla-JS frontend, no symbol index. Orient via `grep -n` against the source tree and targeted `Read` slices; never open a whole module to find a function. The codebase is not imported yet (see §0); the file map below is the expected Odysseus shape and gets confirmed by the first post-import session.
 
-- **Now:** grep for the exact symbol. List the high-traffic files here once they exist (the page or entry point, the data module, the core pure functions) so future sessions jump straight to them.
-- **When `src/` exceeds ~30 files:** add an auto-generated symbol-level lookup table via an Infra session. The generator is stack-shaped (TypeScript compiler API, ctags, a language server, etc.); it walks the source tree and dumps every exported symbol with path + line number to a gitignored index (e.g. `.codenav.json`) refreshed on a single command. Grep the index instead of opening modules.
+**High-traffic files (confirm on import):**
+- `app.py`: FastAPI entry point (uvicorn), route registration, app wiring.
+- `routes/*.py`: HTTP endpoints. Tool-calling and model-endpoint logic live here (P0 territory).
+- `src/*.py`: core backend logic (model adapters, tool dispatch, skills, data access).
+- `static/js/*.js`: frontend DOM code (no framework). UI-touching changes need a screenshot per §4.
+- Data: SQLite database file plus ChromaDB store; `docker-compose.yml` defines the service stack.
 
-(Filled in once a stack is chosen.)
+**P0 grep anchors (Ollama tool-calling):** `supports_tools`, `endpoint_kind`, `proxy`, the model-list cache refresh, and the fenced-block vs native-tool-schema branch. Start here once the code lands.
+
+**When the backend grows past ~30 source files:** add an auto-generated symbol index via an Infra session (for example `ctags`, or a small AST walker over `*.py`) dumping every symbol with path plus line to a gitignored `.codenav.json`, refreshed on one command. Grep the index instead of opening modules.
 

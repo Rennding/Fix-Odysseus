@@ -1,4 +1,4 @@
-# How to use Claude on <<NEW_PROJECT>>
+# How to use Claude on Fix-Odysseus
 
 A short, conversational tutorial. The pipeline is small once you see the shape of it.
 
@@ -18,7 +18,7 @@ Your job: describe what you want, answer when Claude asks, review the PR Claude 
 
 ## §2 · Your first session
 
-Open Claude Code in this repo. The very first session runs a short bootstrap: Claude proposes sensible defaults (project name, platform, repo, stack) for you to correct in one round, asks only for the one-line description, shows you exactly what it will write, and on your "go" sets up your project files in one commit. After that, you're operating.
+Open Claude Code in this repo. The very first session runs a short first-run setup: Claude proposes sensible defaults (project name, platform, repo, stack) for you to correct in one round, asks only for the one-line description, shows you exactly what it will write, and on your "go" sets up your project files in one commit. After that, you're operating.
 
 From then on, type what you want, like you would to a co-worker who already knows the codebase. Examples that work:
 
