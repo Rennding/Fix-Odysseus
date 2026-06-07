@@ -604,8 +604,8 @@ def _build_workspace_instructions_note(filename: str, content: str, truncated: b
         f"- Its contents are already below, so do NOT re-list the folder or re-open "
         f"{filename} just to begin — act on it now.\n"
         f"- Execute its start-of-session protocol immediately, then keep following it.\n"
-        f"- When {filename} routes you to other files or sections, use read_file/bash "
-        f"to fetch exactly those.\n\n"
+        f"- When {filename} routes you to other files or sections, run `cat <path>` "
+        f"(bash) to read exactly those — do not summarize from memory.\n\n"
         f"--- BEGIN {filename} ---\n{content}\n--- END {filename} ---"
     )
     if truncated:
@@ -1738,6 +1738,10 @@ async def stream_agent_loop(
             "or asks to review/find/edit something WITHOUT a path, they mean THIS "
             "folder. Do NOT ask the user for code or a path, and do NOT read a file "
             "literally named \"workspace\".",
+            "To read a file, run `cat <path>` via bash. NEVER state a file's "
+            "contents, a list of files, a curriculum, or a \"next step\" you have "
+            "not actually read this session — if a read errors, fix the path and "
+            "retry; do not guess or invent.",
         ]
         if _instr is None:
             # No operating file — tell the agent to explore the folder itself.
