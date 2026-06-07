@@ -4,15 +4,9 @@
 
 A fork of **Odysseus** (`pewdiepie-archdaemon/odysseus`), a self-hosted AI workspace, maintained to fix and improve specific subsystems. The work is targeted patches to an existing codebase, not a greenfield build. Fixes may be offered back to upstream as PRs, so every patch stays minimal and style-respecting.
 
-## Pending state (read first)
+## Codebase status
 
-Right now, this repo holds the pipeline scaffold only. **No app code exists yet.** The immediate next step is to merge in the Odysseus fork. The first real session after that merge must:
-
-1. Read the incoming codebase and confirm the structure matches what `CLAUDE.md` §4 and §14 assume (`app.py`, `routes/`, `src/`, `static/js/`, `docker-compose.yml`).
-2. Correct §4 and §14 if the real layout differs.
-3. Only then start on the P0 mission below.
-
-Until the import lands, Build and Improve sessions halt per `CLAUDE.md` §0.1.
+The Odysseus fork is imported (snapshot of the fork's current code, June 2026). Structure is confirmed and `CLAUDE.md` §4 and §14 reflect the real layout: `app.py`; `routes/` flat (~50 files); `src/`, `core/`, `services/` with subdirectories (~97 backend files); `static/app.js` plus `static/js/**` (~147 files); `docker-compose.yml`. Build and Improve sessions are unblocked — start on the P0 mission below.
 
 ## Mission (priority order)
 
@@ -59,12 +53,13 @@ Pipeline scaffold (current):
 - `HOW_TO_USE.md`: how to drive sessions.
 - `management/`: templates, specs, audits, failure modes.
 - `scripts/`: label setup and tooling.
-- `.github/workflows/ci.yml`: guarded CI (green on the scaffold, enforces the Python gate once code lands).
+- `.github/workflows/ci.yml`: the fork's CI — byte-compile, `node --check`, and pytest (pytest informational until green). `.github/` also carries the fork's issue and PR templates.
 
-Incoming with the Odysseus fork (expected, confirm on import):
+Imported with the Odysseus fork (confirmed):
 
 - `app.py`: FastAPI entry point.
-- `routes/`: HTTP endpoints (P0 tool-calling logic).
-- `src/`: core backend logic.
-- `static/js/`: frontend DOM code.
+- `routes/`: HTTP endpoints, ~50 files (P0 tool-calling logic).
+- `src/`, `core/`, `services/`: core backend logic across subdirectories.
+- `static/app.js` + `static/js/**`: frontend DOM code, ~147 files.
 - `docker-compose.yml`: service stack.
+- The fork's own `docs/`, `tests/`, `integrations/`, `mcp_servers/`, `config/`, `companion/`, Docker/build files, and `.env.example`.

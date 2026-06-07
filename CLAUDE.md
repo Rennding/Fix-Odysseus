@@ -29,8 +29,6 @@ For known failure modes, `grep management/failure-modes.md` on demand (any sessi
 
 Never read `DEVLOG.md` at session start — it is human-facing only.
 
-**Pending codebase import.** This repo is the pipeline scaffold only. The Odysseus fork (`pewdiepie-archdaemon/odysseus`) has not been merged in yet, so no app code exists; importing it is the immediate next step. The first session after the merge reads the incoming codebase and confirms structure (per §0.1) before any patch. (This note is removed once the import lands and structure is confirmed.)
-
 ---
 
 ## §0.1 · Defensive defaults
@@ -39,7 +37,6 @@ OS-style guard rails. Apply before reading anything else.
 
 - **Missing referenced file** (`PROJECT.md`, `management/templates/*.md`, `management/specs/<spec>.md`, `management/audits/<audit>.md`, `management/failure-modes.md`): halt the session and surface to Aram. Never improvise the content from memory — drift between CLAUDE.md and on-disk files is a known failure mode (§13).
 - **Routing ambiguity** (session type unclear, or multiple types apply): ask Aram ONE question (`q:` style) before reading anything else. If no answer, default to Build (subject to the §0 pending-import note).
-- **No app code present yet.** The Odysseus fork import is pending (see the §0 pending-import note). A Build or Improve request that assumes existing product code: halt and surface. The first post-import session reads the incoming codebase and confirms structure before any patch. (This bullet is removed once the import lands and structure is confirmed.)
 - **Conflict between CLAUDE.md and a downstream file** (e.g. a SPEC uses one form, the template uses another): the on-disk template wins for new content; existing files keep their original form. Add a row to `management/failure-modes.md` describing the mismatch in the same session.
 - **Synthesis over verification**: assertions or multi-step recommendations drawn from training rather than immediate context are high-risk. Open with the §6 "Path before detail" line; if `Source:` is `training` or `unsure`, verify before writing detail (codebase grep, docs WebFetch, GitHub query, package-registry). The trigger categories (a–h), the tells, and the verification tools live in the "Synthesis over verification" row of `management/failure-modes.md` — grep it before responding in any of them (mandatory, per §0).
 
@@ -108,7 +105,7 @@ Refined over time via `HOW_TO_USE.md §8` teach-as-you-go.
 
 ## §4 · Non-negotiable code rules
 
-This project is a **fork of Odysseus** (`pewdiepie-archdaemon/odysseus`), a self-hosted AI workspace. The job is targeted patches to that existing codebase, never greenfield scaffolding. Until the fork is merged in, no app code exists (see the §0 pending-import note); these rules govern every patch once it lands.
+This project is a **fork of Odysseus** (`pewdiepie-archdaemon/odysseus`), a self-hosted AI workspace. The job is targeted patches to that existing codebase, never greenfield scaffolding. The fork is imported; these rules govern every patch.
 
 **Stack (do not change without a Plan):**
 - Backend: Python 3.11, FastAPI, SQLite, ChromaDB. Entry point: `app.py` (uvicorn).
@@ -126,12 +123,12 @@ This project is a **fork of Odysseus** (`pewdiepie-archdaemon/odysseus`), a self
 **Validation gate before any QA Brief** (zero errors required):
 
 ```
-python -m pytest
-python -m py_compile app.py routes/*.py src/*.py
-node --check static/js/<changed-file>.js
+python -m pytest                      # CI marks this informational (continue-on-error) — known flaky tests
+python -m compileall -q app.py core routes src services scripts tests
+node --check static/app.js            # plus every changed static/js/**/*.js file (subdirectories included)
 ```
 
-Run `node --check` on every changed JS file. CI runs the same gate (`.github/workflows/ci.yml`), guarded so it passes on the scaffold-only repo and only enforces once the fork is merged.
+Run `node --check` on every changed JS file; `static/js/` has subdirectories. CI runs the same gate (`.github/workflows/ci.yml`): byte-compile, `node --check` over `static/app.js` and `static/js/**/*.js`, and pytest (informational until the suite is green).
 
 ---
 
@@ -339,16 +336,16 @@ To add a new row, append to the table in that file (not here). Section number pr
 
 ## §14 · Code navigation
 
-Python backend plus vanilla-JS frontend, no symbol index. Orient via `grep -n` against the source tree and targeted `Read` slices; never open a whole module to find a function. The codebase is not imported yet (see §0); the file map below is the expected Odysseus shape and gets confirmed by the first post-import session.
+Python backend plus vanilla-JS frontend, no symbol index. Orient via `grep -n` against the source tree and targeted `Read` slices; never open a whole module to find a function. The Odysseus fork is imported (snapshot, June 2026) and its layout is confirmed below.
 
-**High-traffic files (confirm on import):**
+**High-traffic files:**
 - `app.py`: FastAPI entry point (uvicorn), route registration, app wiring.
-- `routes/*.py`: HTTP endpoints. Tool-calling and model-endpoint logic live here (P0 territory).
-- `src/*.py`: core backend logic (model adapters, tool dispatch, skills, data access).
-- `static/js/*.js`: frontend DOM code (no framework). UI-touching changes need a screenshot per §4.
+- `routes/*.py`: HTTP endpoints (~50 files, flat). Tool-calling and model-endpoint logic live here (P0 territory).
+- `src/**/*.py`: core backend logic (~97 files across subdirectories — model adapters, tool dispatch, skills, data access). `core/` and `services/` also carry backend code.
+- `static/app.js` plus `static/js/**/*.js`: frontend DOM code (~147 files across subdirectories, no framework). UI-touching changes need a screenshot per §4.
 - Data: SQLite database file plus ChromaDB store; `docker-compose.yml` defines the service stack.
 
 **P0 grep anchors (Ollama tool-calling):** `supports_tools`, `endpoint_kind`, `proxy`, the model-list cache refresh, and the fenced-block vs native-tool-schema branch. Start here once the code lands.
 
-**When the backend grows past ~30 source files:** add an auto-generated symbol index via an Infra session (for example `ctags`, or a small AST walker over `*.py`) dumping every symbol with path plus line to a gitignored `.codenav.json`, refreshed on one command. Grep the index instead of opening modules.
+**Symbol index (now warranted — backend is ~150+ source files):** add an auto-generated symbol index via an Infra session (for example `ctags`, or a small AST walker over `*.py`) dumping every symbol with path plus line to a gitignored `.codenav.json`, refreshed on one command. Grep the index instead of opening modules.
 
