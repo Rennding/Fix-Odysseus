@@ -1357,8 +1357,17 @@ def _append_tool_results(
         if round_reasoning:
             msg["reasoning_content"] = round_reasoning
         messages.append(msg)
+        # Fenced-mode tool results have to ride back as a user-role message
+        # (local models choke on role=tool), but small models then mistake their
+        # OWN tool output for something "the user" did. Keep the "[Tool execution
+        # results]" prefix (other code keys off it, see _recent_user_text) and
+        # add an ownership clarifier so the model doesn't narrate its own actions
+        # as the user's.
         messages.append(
-            {"role": "user", "content": f"[Tool execution results]\n\n{tool_output_text}"}
+            {"role": "user", "content": (
+                "[Tool execution results] (output of YOUR tool calls above — "
+                "NOT a message from the user)\n\n" + tool_output_text
+            )}
         )
 
 
@@ -1809,10 +1818,25 @@ async def stream_agent_loop(
             "almost always a FOLDER in this workspace (see the layout below) — not "
             "a section of any operating file. Open that folder and read its files "
             "(e.g. `cat <name>/CURRICULUM.md`). Never invent sections or contents.",
+            "Every command runs from the workspace ROOT above, and `cd` does NOT "
+            "persist between commands. Use paths relative to the root exactly as "
+            "shown in the layout (e.g. `indie-ops/CURRICULUM.md`, "
+            "`management/templates/UNIT.md`). Never use `../` to leave the "
+            "workspace, and never assume you are \"inside\" a subfolder.",
+            "If a path appears in the WORKSPACE LAYOUT, it EXISTS — read it, do "
+            "NOT recreate it. A failed read means your PATH is wrong: re-check it "
+            "against the layout and retry. NEVER run mkdir or write/overwrite a "
+            "file to \"fix\" a missing one — that destroys real work.",
+            "Work ONE step at a time: run a single command, read the result, then "
+            "decide the next step. Do not pre-write multi-step plans or batch many "
+            "cat/create commands before seeing results.",
             "To read a file, run `cat <path>` via bash. NEVER state a file's "
             "contents, a list of files, a curriculum, or a \"next step\" you have "
             "not actually read this session — if a read errors, fix the path and "
             "retry; do not guess or invent.",
+            "Tool outputs return to you in a message labeled \"[Tool execution "
+            "results]\" — those are the results of YOUR OWN tool calls, not "
+            "messages from the user. Never describe your own actions as the user's.",
         ]
         if _instr is None and not _tree:
             # No operating file and no listing — tell the agent to explore itself.
