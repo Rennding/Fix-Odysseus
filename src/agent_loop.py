@@ -545,6 +545,17 @@ def _endpoint_lookup_keys(endpoint_url: str) -> List[str]:
 _WORKSPACE_INSTRUCTION_FILES = ("CLAUDE.md", "AGENTS.md", "AGENT.md")
 _WORKSPACE_INSTRUCTIONS_DEFAULT_MAXCHARS = 12000
 
+# Compact workspace-tree settings. The tree is injected into the prompt so the
+# agent SEES subfolders/files without an exploration round — and so it stops
+# treating a named subject/topic (e.g. "indie-ops") as a section of the
+# operating file instead of the folder it actually is.
+_WS_TREE_SKIP_DIRS = frozenset({
+    ".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache",
+    ".pytest_cache", ".idea", ".vscode", "dist", "build", ".cache",
+})
+_WS_TREE_MAX_ENTRIES = 150
+_WS_TREE_MAX_DEPTH = 2
+
 
 def _workspace_instructions_maxchars() -> int:
     """Char cap for an injected operating file. The file is re-sent every turn,
@@ -590,6 +601,61 @@ def _load_workspace_instructions(workspace: str):
     except Exception as _e:  # never break a turn over an instructions file
         logger.debug("workspace instructions load failed: %s", _e)
     return None
+
+
+def _build_workspace_tree(workspace: str) -> str:
+    """Bounded, relative listing of the workspace (depth + count capped) so the
+    agent sees its structure without an exploration round. Returns '' on failure
+    or empty workspace. Never raises."""
+    try:
+        if not workspace or not os.path.isdir(workspace):
+            return ""
+        root = os.path.abspath(workspace)
+        out: List[str] = []
+        truncated = False
+
+        def walk(d: str, prefix: str, depth: int) -> None:
+            nonlocal truncated
+            if truncated or depth > _WS_TREE_MAX_DEPTH:
+                return
+            try:
+                entries = sorted(os.listdir(d))
+            except OSError:
+                return
+            dirs, files = [], []
+            for e in entries:
+                if e.startswith("."):
+                    continue
+                full = os.path.join(d, e)
+                if os.path.isdir(full):
+                    if e not in _WS_TREE_SKIP_DIRS:
+                        dirs.append(e)
+                elif os.path.isfile(full):
+                    files.append(e)
+            for e in files:
+                out.append(f"{prefix}{e}")
+                if len(out) >= _WS_TREE_MAX_ENTRIES:
+                    truncated = True
+                    return
+            for e in dirs:
+                out.append(f"{prefix}{e}/")
+                if len(out) >= _WS_TREE_MAX_ENTRIES:
+                    truncated = True
+                    return
+                walk(os.path.join(d, e), f"{prefix}{e}/", depth + 1)
+                if truncated:
+                    return
+
+        walk(root, "", 0)
+        if not out:
+            return ""
+        tree = "\n".join(out)
+        if truncated:
+            tree += "\n… (listing truncated)"
+        return tree
+    except Exception as _e:  # never break a turn over the tree
+        logger.debug("workspace tree build failed: %s", _e)
+        return ""
 
 
 def _build_workspace_instructions_note(filename: str, content: str, truncated: bool) -> str:
@@ -1729,6 +1795,7 @@ async def stream_agent_loop(
         # at the end, small models ignored it and asked the user for code. The
         # folder IS the project; the agent must explore it, not ask.
         _instr = _load_workspace_instructions(workspace)
+        _tree = _build_workspace_tree(workspace)
         _ws_lines = [
             "## ACTIVE WORKSPACE — READ FIRST",
             f"The user is working in this folder: {workspace}",
@@ -1738,19 +1805,27 @@ async def stream_agent_loop(
             "or asks to review/find/edit something WITHOUT a path, they mean THIS "
             "folder. Do NOT ask the user for code or a path, and do NOT read a file "
             "literally named \"workspace\".",
+            "A subject, topic, or module the user names (e.g. \"indie-ops\") is "
+            "almost always a FOLDER in this workspace (see the layout below) — not "
+            "a section of any operating file. Open that folder and read its files "
+            "(e.g. `cat <name>/CURRICULUM.md`). Never invent sections or contents.",
             "To read a file, run `cat <path>` via bash. NEVER state a file's "
             "contents, a list of files, a curriculum, or a \"next step\" you have "
             "not actually read this session — if a read errors, fix the path and "
             "retry; do not guess or invent.",
         ]
-        if _instr is None:
-            # No operating file — tell the agent to explore the folder itself.
+        if _instr is None and not _tree:
+            # No operating file and no listing — tell the agent to explore itself.
             _ws_lines.append(
                 "ALWAYS start by exploring it yourself: run `bash` → `git ls-files` "
                 "(or `ls -R`) to see the files, then read_file the relevant ones by "
                 "path RELATIVE to the workspace."
             )
         _ws_note = "\n".join(_ws_lines)
+        if _tree:
+            # Show the structure directly so the agent doesn't burn a round on
+            # `ls -R` and doesn't mistake a subfolder for a section.
+            _ws_note = _ws_note + "\n\n## WORKSPACE LAYOUT (relative paths)\n" + _tree
         if _instr is not None:
             # An operating file (CLAUDE.md / AGENTS.md) is present — inline it as
             # authoritative instructions so the agent follows it without being

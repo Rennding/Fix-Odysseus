@@ -8,6 +8,7 @@ import os
 from src.agent_loop import (
     _load_workspace_instructions,
     _build_workspace_instructions_note,
+    _build_workspace_tree,
 )
 
 
@@ -78,3 +79,40 @@ def test_note_frames_as_instructions_not_summary():
 def test_note_marks_truncation():
     note = _build_workspace_instructions_note("CLAUDE.md", "BODY", True)
     assert "truncated" in note.lower()
+
+
+def test_tree_lists_files_and_subfolders(tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("x")
+    sub = tmp_path / "indie-ops"
+    sub.mkdir()
+    (sub / "CURRICULUM.md").write_text("y")
+    tree = _build_workspace_tree(str(tmp_path))
+    assert "CLAUDE.md" in tree
+    assert "indie-ops/" in tree
+    assert "indie-ops/CURRICULUM.md" in tree
+
+
+def test_tree_skips_hidden_and_vcs(tmp_path):
+    (tmp_path / "keep.md").write_text("x")
+    (tmp_path / ".secret").write_text("x")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("x")
+    tree = _build_workspace_tree(str(tmp_path))
+    assert "keep.md" in tree
+    assert ".secret" not in tree
+    assert ".git" not in tree
+
+
+def test_tree_respects_depth(tmp_path):
+    deep = tmp_path / "a" / "b" / "c" / "d"
+    deep.mkdir(parents=True)
+    (deep / "deep.md").write_text("x")
+    tree = _build_workspace_tree(str(tmp_path))
+    # depth cap is 2, so a/ and a/b/ appear but the deeply nested file does not.
+    assert "a/" in tree
+    assert "deep.md" not in tree
+
+
+def test_tree_empty_for_missing_dir():
+    assert _build_workspace_tree("/no/such/dir") == ""
+    assert _build_workspace_tree("") == ""
