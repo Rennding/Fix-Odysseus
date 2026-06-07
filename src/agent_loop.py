@@ -677,9 +677,25 @@ def _build_workspace_instructions_note(filename: str, content: str, truncated: b
     if truncated:
         note += (
             f"\n[NOTE: {filename} was truncated to fit. Read the rest with "
-            f"`read_file {filename}` or grep it for the sections its routing names.]"
+            f"`cat {filename}` or grep it for the sections its routing names.]"
         )
     return note
+
+
+# Harness-only marker — only _append_tool_results emits "[Tool execution
+# results]". If it shows up in the model's OWN output it means the model
+# parroted the envelope and invented a result instead of running a tool.
+_FABRICATED_RESULT_RE = re.compile(r"\[Tool execution results?\]")
+_FABRICATION_MAX_RETRIES = 2
+
+
+def _fabricated_result_marker(text: str):
+    """Return the parroted tool-result marker if the model faked an execution
+    (wrote the harness-only envelope itself), else None."""
+    if not text:
+        return None
+    m = _FABRICATED_RESULT_RE.search(text)
+    return m.group(0) if m else None
 
 # Admin tool keywords — if the last user message contains any of these, include admin tools
 _ADMIN_KEYWORDS = [
@@ -1978,6 +1994,7 @@ async def stream_agent_loop(
     _tool_type_counts: collections.Counter = collections.Counter()
     _THINK_RE = re.compile(r'<think>.*?</think>', re.DOTALL | re.IGNORECASE)
     _force_answer = False  # set by loop-breaker → next round runs with NO tools
+    _fab_retries = 0  # fabricated-tool-result retries used this turn
     # Supervisor: how many times we've nudged the model after it announced
     # an action without emitting the tool call. Capped to prevent a model
     # that *can't* call the tool from looping forever.
@@ -2240,6 +2257,37 @@ async def stream_agent_loop(
             # Intercept [DONE] — don't forward until all rounds finish
 
         tool_blocks, used_native = _resolve_tool_blocks(round_response, native_tool_calls, round_num)
+
+        # ── Fabricated-execution detector ──────────────────────────────
+        # Weak/thinking models sometimes parrot the harness-only
+        # "[Tool execution results]" marker and INVENT a command's output
+        # instead of emitting a real tool call. Only the harness emits that
+        # marker, so its presence with no real tool block is a faked run:
+        # drop the invented tail, tell the model to actually call the tool,
+        # and retry. Bounded so a stubborn model can't loop forever.
+        _fab_marker = _fabricated_result_marker(round_response) if not tool_blocks else None
+        if _fab_marker and not _force_answer and _fab_retries < _FABRICATION_MAX_RETRIES:
+            _fab_retries += 1
+            _kept = round_response[:round_response.find(_fab_marker)].rstrip()
+            logger.warning(
+                f"[agent] round {round_num}: fabricated tool result detected "
+                f"({_fab_marker!r}); forcing a real call "
+                f"({_fab_retries}/{_FABRICATION_MAX_RETRIES})"
+            )
+            # Keep the saved answer clean — drop the invented tail.
+            _fi = full_response.rfind(_fab_marker)
+            if _fi != -1:
+                full_response = full_response[:_fi].rstrip()
+            messages.append({"role": "assistant", "content": _kept or "(started to act)"})
+            messages.append({"role": "user", "content": (
+                f"STOP — you did not actually run anything. You wrote {_fab_marker!r} "
+                "and invented the output. NEVER simulate tool output or invent file "
+                "contents. To really run a command, emit ONE fenced code block and "
+                "nothing after it, for example:\n```bash\ncat indie-ops/CURRICULUM.md\n```\n"
+                "Then STOP and wait — the system runs it and returns the real result. "
+                "Use the correct path from the WORKSPACE LAYOUT."
+            )})
+            continue
 
         # Force-answer round: we told the model to STOP calling tools and
         # answer. If it ignored that and emitted a (possibly DSML) tool
