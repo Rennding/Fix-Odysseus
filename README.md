@@ -308,6 +308,13 @@ If `chromadb-client` (the lightweight HTTP-only package) is installed alongside 
 ```
 
 ### HTTPS + LAN/Tailscale exposure
+Quick path: `scripts/odysseus lan enable` flips the bind to your LAN, adds your
+host's LAN origin to `ALLOWED_ORIGINS`, keeps `AUTH_ENABLED=true`, and prints the
+URL to open on your phone. Recreate the app afterwards (`docker compose down && up`,
+or restart the native run); `scripts/odysseus lan disable` reverts to loopback-only.
+That gets you a working HTTP connection on the LAN — add HTTPS with the steps below
+so phone browsers stop warning and credentials aren't sent in the clear.
+
 To expose Odysseus on a local network or Tailscale with HTTPS:
 1. Change the bind address to `0.0.0.0` in `.env` (`APP_BIND=0.0.0.0` or `ODYSSEUS_HOST=0.0.0.0`).
 2. Generate a locally-trusted cert for your LAN/Tailscale IPs using [mkcert](https://github.com/FiloSottile/mkcert):
