@@ -312,8 +312,11 @@ Quick path: `scripts/odysseus lan enable` flips the bind to your LAN, adds your
 host's LAN origin to `ALLOWED_ORIGINS`, keeps `AUTH_ENABLED=true`, and prints the
 URL to open on your phone. Recreate the app afterwards (`docker compose down && up`,
 or restart the native run); `scripts/odysseus lan disable` reverts to loopback-only.
-That gets you a working HTTP connection on the LAN — add HTTPS with the steps below
-so phone browsers stop warning and credentials aren't sent in the clear.
+Add `--https` (`scripts/odysseus lan enable --https`, or `scripts/odysseus lan https`
+on an already-enabled setup) to also generate a locally-trusted mkcert certificate —
+it prints the exact `uvicorn` command to serve with TLS and how to trust the CA on
+your phone, so browsers stop warning and credentials aren't sent in the clear. The
+manual equivalent of that last step:
 
 To expose Odysseus on a local network or Tailscale with HTTPS:
 1. Change the bind address to `0.0.0.0` in `.env` (`APP_BIND=0.0.0.0` or `ODYSSEUS_HOST=0.0.0.0`).

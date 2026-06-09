@@ -8,20 +8,29 @@ touches the public internet, and it leaves authentication on.
 
     odysseus-lan status        # current bind, your LAN IP, the phone URL
     odysseus-lan enable        # bind to LAN + trust your LAN origin
+    odysseus-lan enable --https  # ...and generate a locally-trusted TLS cert
+    odysseus-lan https         # add HTTPS to an already-LAN-enabled setup
     odysseus-lan disable       # back to loopback-only (the safe default)
 
 After `enable`, recreate the app so the new bind takes effect:
     docker compose down && docker compose up -d     # Docker
     # or just restart `uvicorn` / `./start-macos.sh` for a native run
 
-Then open the printed URL on your phone and log in as usual. For a clean,
-warning-free HTTPS connection over the LAN, see the "HTTPS + LAN" section
-in the README (mkcert recipe).
+Then open the printed URL on your phone and log in as usual.
+
+`--https` / the `https` subcommand wraps [mkcert]: it installs a local CA,
+issues a cert for your LAN IP, and prints the exact `uvicorn` command plus
+how to trust the CA on your phone. HTTPS this way is a native-run feature —
+Docker Compose serves plain HTTP, so for TLS in Docker terminate it at a
+reverse proxy instead. Install mkcert first: `brew install mkcert` (macOS),
+`apt install mkcert` (Debian/Ubuntu), or see github.com/FiloSottile/mkcert.
 """
 from __future__ import annotations
 
 import os
+import shutil
 import socket
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "_lib"))
@@ -34,6 +43,10 @@ ENV_EXAMPLE = REPO_ROOT / ".env.example"
 
 LOOPBACK = "127.0.0.1"
 ALL_INTERFACES = "0.0.0.0"
+
+CERTS_DIR = REPO_ROOT / "certs"
+CERT_FILE = CERTS_DIR / "cert.pem"
+KEY_FILE = CERTS_DIR / "key.pem"
 
 
 def _detect_lan_ip() -> str | None:
@@ -110,6 +123,63 @@ def _auth_on(lines: list[str]) -> bool:
     return (_get_value(lines, "AUTH_ENABLED") or "true").lower() != "false"
 
 
+def _add_origin(lines: list[str], origin: str) -> list[str]:
+    """Append `origin` to ALLOWED_ORIGINS if not already present."""
+    current = _get_value(lines, "ALLOWED_ORIGINS") or "http://localhost,http://127.0.0.1"
+    parts = [o.strip() for o in current.split(",") if o.strip()]
+    if origin not in parts:
+        parts.append(origin)
+    return _upsert(lines, "ALLOWED_ORIGINS", ",".join(parts))
+
+
+def _mkcert_bin() -> str:
+    """Locate mkcert or fail with per-platform install hints."""
+    found = shutil.which("mkcert")
+    if found:
+        return found
+    fail(
+        "mkcert not found. Install it, then re-run:\n"
+        "  macOS:          brew install mkcert\n"
+        "  Debian/Ubuntu:  sudo apt install mkcert   (or libnss3-tools + the release binary)\n"
+        "  Windows:        choco install mkcert\n"
+        "  Docs:           https://github.com/FiloSottile/mkcert",
+        code=2,
+    )
+    return ""  # unreachable
+
+
+def _generate_certs(ip: str | None) -> dict:
+    """Install the local CA and issue a cert covering loopback + the LAN
+    IP. Returns a dict describing the result for the JSON payload."""
+    mkcert = _mkcert_bin()
+    CERTS_DIR.mkdir(exist_ok=True)
+
+    # Install the local CA into the system (and browser) trust stores.
+    ca = subprocess.run([mkcert, "-install"], capture_output=True, text=True)
+    ca_note = None
+    if ca.returncode != 0:
+        ca_note = (ca.stderr or ca.stdout).strip() or "mkcert -install reported a non-zero exit"
+
+    hosts = ["localhost", LOOPBACK] + ([ip] if ip else [])
+    gen = subprocess.run(
+        [mkcert, "-cert-file", str(CERT_FILE), "-key-file", str(KEY_FILE), *hosts],
+        capture_output=True, text=True,
+    )
+    if gen.returncode != 0:
+        fail("mkcert failed to issue the certificate:\n" + (gen.stderr or gen.stdout).strip())
+
+    caroot = subprocess.run([mkcert, "-CAROOT"], capture_output=True, text=True)
+    ca_root = caroot.stdout.strip() if caroot.returncode == 0 else None
+
+    return {
+        "cert_file": str(CERT_FILE),
+        "key_file": str(KEY_FILE),
+        "cert_hosts": hosts,
+        "ca_root": ca_root,
+        "ca_install_note": ca_note,
+    }
+
+
 def cmd_status(args):
     lines = _read_env_lines()
     bind = _get_value(lines, "APP_BIND") or LOOPBACK
@@ -135,19 +205,24 @@ def cmd_enable(args):
     lines = _upsert(lines, "AUTH_ENABLED", "true")  # never expose without a login wall
 
     if ip:
-        origins = _get_value(lines, "ALLOWED_ORIGINS") or "http://localhost,http://127.0.0.1"
-        lan_origin = f"http://{ip}:{port}"
-        parts = [o.strip() for o in origins.split(",") if o.strip()]
-        if lan_origin not in parts:
-            parts.append(lan_origin)
-        lines = _upsert(lines, "ALLOWED_ORIGINS", ",".join(parts))
+        lines = _add_origin(lines, f"http://{ip}:{port}")
+
+    https = None
+    if getattr(args, "https", False):
+        https = _generate_certs(ip)
+        lines = _upsert(lines, "SECURE_COOKIES", "true")  # cookies are now sent over TLS
+        if ip:
+            lines = _add_origin(lines, f"https://{ip}:{port}")
 
     _write_env(lines)
-    emit({
+
+    scheme = "https" if https else "http"
+    payload = {
         "lan_enabled": True,
         "auth_enabled": True,
+        "https": bool(https),
         "lan_ip": ip,
-        "phone_url": _phone_url(ip, port),
+        "phone_url": f"{scheme}://{ip}:{port}" if ip else None,
         "next_step": (
             "recreate the app so the new bind takes effect: "
             "`docker compose down && docker compose up -d` (Docker), "
@@ -158,7 +233,55 @@ def cmd_enable(args):
             "could not detect a LAN IP (offline?). APP_BIND is set to 0.0.0.0; "
             "find your host's LAN address manually and open http://<that-ip>:" + port
         ),
-    }, args)
+    }
+    if https:
+        payload.update(_https_guidance(https, ip, port))
+    emit(payload, args)
+
+
+def _https_guidance(https: dict, ip: str | None, port: str) -> dict:
+    """The TLS-specific fields appended to enable/https output."""
+    return {
+        "cert_file": https["cert_file"],
+        "key_file": https["key_file"],
+        "ca_root": https["ca_root"],
+        "ca_install_note": https["ca_install_note"],
+        "run_command": (
+            f"python -m uvicorn app:app --host {ALL_INTERFACES} --port {port} "
+            f"--ssl-certfile={https['cert_file']} --ssl-keyfile={https['key_file']}"
+        ),
+        "trust_on_phone": (
+            "copy rootCA.pem from ca_root to your phone and install it as a trusted "
+            "CA (Android: Settings > Security > Encryption > Install a certificate > "
+            "CA certificate). Without this the browser still warns."
+        ),
+        "docker_note": (
+            "Docker Compose serves plain HTTP; these certs are for a native uvicorn run "
+            "(run_command above) or a TLS-terminating reverse proxy in front of Docker."
+        ),
+    }
+
+
+def cmd_https(args):
+    lines = _read_env_lines()
+    ip = _detect_lan_ip()
+    port = _port(lines)
+
+    https = _generate_certs(ip)
+    lines = _upsert(lines, "APP_BIND", ALL_INTERFACES)
+    lines = _upsert(lines, "AUTH_ENABLED", "true")
+    lines = _upsert(lines, "SECURE_COOKIES", "true")
+    if ip:
+        lines = _add_origin(lines, f"https://{ip}:{port}")
+    _write_env(lines)
+
+    payload = {
+        "https": True,
+        "lan_ip": ip,
+        "phone_url": f"https://{ip}:{port}" if ip else None,
+    }
+    payload.update(_https_guidance(https, ip, port))
+    emit(payload, args)
 
 
 def cmd_disable(args):
@@ -180,7 +303,12 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", required=True)
     common = p._common_parents[0]
     sub.add_parser("status", parents=[common], help="show bind, LAN IP, phone URL").set_defaults(func=cmd_status)
-    sub.add_parser("enable", parents=[common], help="bind to LAN + trust your LAN origin").set_defaults(func=cmd_enable)
+    pe = sub.add_parser("enable", parents=[common], help="bind to LAN + trust your LAN origin")
+    pe.add_argument("--https", action="store_true",
+                    help="also generate a locally-trusted TLS cert via mkcert")
+    pe.set_defaults(func=cmd_enable)
+    sub.add_parser("https", parents=[common],
+                   help="generate a locally-trusted TLS cert for LAN HTTPS").set_defaults(func=cmd_https)
     sub.add_parser("disable", parents=[common], help="back to loopback-only").set_defaults(func=cmd_disable)
     return p
 
